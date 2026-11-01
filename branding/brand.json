@@ -1,0 +1,11 @@
+{
+  "name": "Chat Chacha",
+  "assistant": "Assistant",
+  "description": "Cold email that lands in the inbox: warm your mailboxes, send at a safe pace, and keep every reply in one place.",
+  "theme_color": "#7854fc",
+  "background_color": "#1d0f53",
+  "palette_sky": {
+    "50": "#f6f4ff", "100": "#ede8ff", "200": "#dcd3fe", "300": "#c1b0fd", "400": "#a089fd",
+    "500": "#8a6dfd", "600": "#7854fc", "700": "#6440e8", "800": "#5131c2", "900": "#3f279a", "950": "#1d0f53"
+  }
+}

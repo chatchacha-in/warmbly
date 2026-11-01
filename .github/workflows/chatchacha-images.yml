@@ -1,0 +1,137 @@
+# Builds Chat Chacha-branded Warmbly images for the self-hosted server
+# (email.chatchacha.in). For an upstream Warmbly release it:
+#   - checks out that release untouched, applies branding/apply.py, and builds the
+#     four images people see (web, admin, forms, backend);
+#   - copies the other five images unchanged from Warmbly's registry;
+#   - publishes all nine under ghcr.io/chatchacha-in/warmbly/<service>:<tag>.
+# The server pulls from that prefix (WARMBLY_IMAGE_PREFIX), so the admin panel's
+# "Update" button installs the branded build of each release.
+name: Chat Chacha images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Warmbly release to brand (vX.Y.Z). Leave empty for the newest."
+        required: false
+        default: ""
+      force:
+        description: "Rebuild even if this tag was already built"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "30 2 * * *" # 08:00 IST daily: brand any new Warmbly release
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: chatchacha-images
+  cancel-in-progress: false
+
+env:
+  PREFIX: ghcr.io/chatchacha-in/warmbly
+  UPSTREAM_REPO: warmbly/warmbly
+  UPSTREAM_PREFIX: ghcr.io/warmbly/warmbly
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      build: ${{ steps.pick.outputs.build }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          tag="${IN_TAG:-}"
+          [ -n "$tag" ] || tag=$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq .tag_name)
+          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad tag: $tag"; exit 1 ;; esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" != "true" ] && docker manifest inspect "$PREFIX/web:$tag" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Branded images for $tag already exist; nothing to do."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Building branded images for $tag."
+          fi
+
+  branded:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { service: web, context: web, file: web/Dockerfile }
+          - { service: admin, context: admin, file: admin/Dockerfile }
+          - { service: forms, context: ., file: deploy/docker/forms.Dockerfile }
+          - { service: backend, context: ., file: deploy/docker/backend.Dockerfile }
+    steps:
+      - name: Check out the branding kit
+        uses: actions/checkout@v4
+        with:
+          path: brand
+      - name: Check out Warmbly ${{ needs.plan.outputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.plan.outputs.tag }}
+          path: src
+      - name: Install ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+      - name: Apply Chat Chacha branding
+        run: python3 brand/branding/apply.py src brand/branding
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: src/${{ matrix.context }}
+          file: src/${{ matrix.file }}
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ needs.plan.outputs.tag }}
+            COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=chatchacha-${{ matrix.service }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.tag }}
+          tags: ${{ env.PREFIX }}/${{ matrix.service }}:${{ needs.plan.outputs.tag }}
+          cache-from: type=gha,scope=cc-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=cc-${{ matrix.service }}
+
+  mirrored:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [consumer, worker, tracking, realtime, updater]
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Copy ${{ matrix.service }} unchanged
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          SVC: ${{ matrix.service }}
+        run: docker buildx imagetools create -t "$PREFIX/$SVC:$TAG" "$UPSTREAM_PREFIX/$SVC:$TAG"
