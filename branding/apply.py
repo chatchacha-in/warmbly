@@ -186,6 +186,34 @@ else:
                     os.path.join(pub, "favicon.ico")], check=True)
     stats["icons generated"] = 8
 
+    # Admin panel: its own icon set; the SVG mark it prefers is dropped so the PNGs win.
+    apub = path("admin/public")
+    for size, name in ((16, "favicon-16x16.png"), (32, "favicon-32x32.png"), (180, "apple-touch-icon.png"),
+                       (192, "icon-192.png"), (512, "icon-512.png")):
+        subprocess.run([magick, logo, "-resize", f"{size}x{size}", "-background", "none", "-gravity", "center",
+                        "-extent", f"{size}x{size}", os.path.join(apub, name)], check=True)
+    subprocess.run([magick, logo, "-background", "none", "-define", "icon:auto-resize=48,32,16",
+                    os.path.join(apub, "favicon.ico")], check=True)
+    stats["icons generated"] += 6
+
+patch_regex("admin/index.html", r'\n[ \t]*<link rel="icon" type="image/svg\+xml" href="/admin-icon\.svg" />', "")
+
+# Admin sidebar mark.
+os.makedirs(path("admin/public/brand"), exist_ok=True)
+shutil.copyfile(logo, path("admin/public/brand/logo.png"))
+patch("admin/src/components/Logo.tsx", "export function Logo(", "export function UpstreamLogo(")
+alogo = path("admin/src/components/Logo.tsx")
+write(alogo, read(alogo) + (
+    "\n// Chat Chacha brand: the mark is the company logo image (see branding/apply.py).\n"
+    "export function Logo({ className }: { className?: string }) {\n"
+    '    return <img src="/brand/logo.png" alt="" className={className} style={{ height: "auto" }} />;\n'
+    "}\n"))
+
+amanifest = path("admin/public/site.webmanifest")
+am = json.loads(WORD.sub(NAME, read(amanifest)))
+am.update(theme_color=cfg["theme_color"], background_color=cfg["background_color"])
+write(amanifest, json.dumps(am, indent=2) + "\n")
+
 manifest = path("web/public/site.webmanifest")
 m = json.loads(read(manifest))
 m.update(name=NAME, short_name=NAME, description=cfg["description"],
